@@ -38,12 +38,60 @@ const lerpState = (s1, s2, t) => ({
     right_eye: lerpEye(s1.right_eye, s2.right_eye, t)
 });
 
+// App State
+let eyeScale = 1.0;
+let role = 'MASTER'; // 'MASTER' (Left) or 'CLIENT' (Right)
+let peer = null;
+let connections = [];
+let presets = null;
+let inactivityTimeout;
+
+let syncState = {
+    currentIdx: 0,
+    nextIdx: 1,
+    transitionStartTime: 0
+};
+
 async function init() {
     const canvas = document.getElementById('eyeCanvas');
     const ctx = canvas.getContext('2d');
     const label = document.getElementById('expressionLabel');
-    
-    let presets;
+    const uiPanel = document.getElementById('ui-panel');
+    const shareUrlInput = document.getElementById('share-url');
+
+    // Make canvas full screen
+    function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // Inactivity UI Toggle
+    function resetInactivity() {
+        uiPanel.classList.remove('hidden');
+        document.body.style.cursor = 'default';
+        clearTimeout(inactivityTimeout);
+        inactivityTimeout = setTimeout(() => {
+            uiPanel.classList.add('hidden');
+            document.body.style.cursor = 'none';
+        }, 5000);
+    }
+    document.addEventListener('mousemove', resetInactivity);
+    document.addEventListener('mousedown', resetInactivity);
+    document.addEventListener('keydown', resetInactivity);
+    resetInactivity(); // Start timer immediately
+
+    // Zoom Controls
+    document.getElementById('btn-zoom-in').addEventListener('click', () => eyeScale += 0.2);
+    document.getElementById('btn-zoom-out').addEventListener('click', () => eyeScale = Math.max(0.2, eyeScale - 0.2));
+
+    // Select text on click for easy copying
+    shareUrlInput.addEventListener('click', function() {
+        this.select();
+    });
+
+    // Load Data
     try {
         const response = await fetch('./presets.json');
         presets = await response.json();
@@ -53,13 +101,72 @@ async function init() {
         return;
     }
 
-    let startTime = null;
+    // PeerJS Networking Setup
+    const urlParams = new URLSearchParams(window.location.search);
+    const peerIdFromUrl = urlParams.get('peer');
 
-    function drawEye(eyeData, offsetX) {
+    if (peerIdFromUrl) {
+        // CLIENT MODE (RIGHT EYE)
+        role = 'CLIENT';
+        document.getElementById('role-label').innerText = 'Right Eye';
+        
+        peer = new Peer();
+        peer.on('open', () => {
+            label.innerText = "Connecting to Master...";
+            const conn = peer.connect(peerIdFromUrl);
+            
+            conn.on('open', () => {
+                console.log("Connected to Master!");
+            });
+            
+            conn.on('data', (data) => {
+                if (data.type === 'SYNC') {
+                    syncState.currentIdx = data.currentIdx;
+                    syncState.nextIdx = data.nextIdx;
+                    syncState.transitionStartTime = performance.now() + data.timeUntilTransition;
+                }
+            });
+            
+            conn.on('close', () => {
+                label.innerText = "Connection lost.";
+            });
+        });
+    } else {
+        // MASTER MODE (LEFT EYE)
+        role = 'MASTER';
+        document.getElementById('role-label').innerText = 'Left Eye';
+        document.getElementById('share-container').style.display = 'block';
+        syncState.transitionStartTime = performance.now() + HOLD_DURATION;
+
+        peer = new Peer();
+        peer.on('open', (id) => {
+            const shareUrl = window.location.origin + window.location.pathname + '?peer=' + id;
+            shareUrlInput.value = shareUrl;
+        });
+
+        peer.on('connection', (conn) => {
+            connections.push(conn);
+            conn.on('open', () => {
+                // Instantly sync the new client to the current cycle
+                conn.send({
+                    type: 'SYNC',
+                    currentIdx: syncState.currentIdx,
+                    nextIdx: syncState.nextIdx,
+                    timeUntilTransition: Math.max(0, syncState.transitionStartTime - performance.now())
+                });
+            });
+            conn.on('close', () => {
+                connections = connections.filter(c => c !== conn);
+            });
+        });
+    }
+
+    // Rendering Logic
+    function drawEye(eyeData) {
         ctx.save();
-        // Move to center of canvas, apply offset for left/right eye, scale up, and flip Y
-        ctx.translate(canvas.width / 2 + offsetX, canvas.height / 2);
-        ctx.scale(150, -150); 
+        // Move to exact center of the window, apply global scale, and flip Y axis to match Cartesian math
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.scale(150 * eyeScale, -150 * eyeScale); 
         
         const order = ["top", "right", "bottom", "left"];
         
@@ -83,12 +190,6 @@ async function init() {
             ctx.fill();
         }
         
-        // Draw outer black socket boundary (optional, for aesthetics)
-        ctx.beginPath();
-        ctx.arc(0, 0, 1.2, 0, Math.PI * 2);
-        ctx.fillStyle = "#111111";
-        ctx.fill();
-
         // Draw Sclera
         drawShape(eyeData.sclera, "#ffffff");
         
@@ -98,46 +199,62 @@ async function init() {
         ctx.restore();
     }
 
-    function renderLoop(timestamp) {
-        if (!startTime) startTime = timestamp;
-        const elapsed = timestamp - startTime;
+    function renderLoop() {
+        const now = performance.now();
         
-        const totalDuration = HOLD_DURATION + TRANSITION_DURATION;
-        const cycleTime = elapsed % totalDuration;
+        // Master drives the state changes
+        if (role === 'MASTER') {
+            if (now > syncState.transitionStartTime + TRANSITION_DURATION) {
+                // Cycle complete, step forward
+                syncState.currentIdx = syncState.nextIdx;
+                syncState.nextIdx = (syncState.nextIdx + 1) % EXPRESSION_KEYS.length;
+                syncState.transitionStartTime = now + HOLD_DURATION;
+
+                // Broadcast to all connected clients
+                const msg = {
+                    type: 'SYNC',
+                    currentIdx: syncState.currentIdx,
+                    nextIdx: syncState.nextIdx,
+                    timeUntilTransition: HOLD_DURATION
+                };
+                connections.forEach(conn => conn.send(msg));
+            }
+        }
         
-        // Calculate indices
-        const currentCycle = Math.floor(elapsed / totalDuration);
-        const currentIndex = currentCycle % EXPRESSION_KEYS.length;
-        const nextIndex = (currentIndex + 1) % EXPRESSION_KEYS.length;
-        
-        label.innerText = EXPRESSION_KEYS[currentIndex].replace(/_/g, ' ');
-        
-        // Calculate progression t (0.0 to 1.0)
+        // Calculate interpolation t (0.0 to 1.0)
         let t = 0;
-        if (cycleTime > HOLD_DURATION) {
-            t = (cycleTime - HOLD_DURATION) / TRANSITION_DURATION;
+        if (now >= syncState.transitionStartTime) {
+            t = (now - syncState.transitionStartTime) / TRANSITION_DURATION;
+            t = Math.min(1.0, Math.max(0.0, t)); // Clamp
         }
         
         const easedT = easeInOutCubic(t);
         
-        const startState = presets[EXPRESSION_KEYS[currentIndex]];
-        const endState = presets[EXPRESSION_KEYS[nextIndex]];
+        const startState = presets[EXPRESSION_KEYS[syncState.currentIdx]];
+        const endState = presets[EXPRESSION_KEYS[syncState.nextIdx]];
         
         const currentState = lerpState(startState, endState, easedT);
         
-        // Clear canvas
+        // Update UI Label
+        const displayLabel = EXPRESSION_KEYS[syncState.currentIdx].replace(/_/g, ' ');
+        label.innerText = displayLabel;
+        
+        // Clear full canvas
         ctx.fillStyle = "#000000";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         
-        // Draw eyes (offset left by -180px, right by +180px)
-        drawEye(currentState.left_eye, -180);
-        drawEye(currentState.right_eye, 180);
+        // Render appropriate eye for this window's role
+        if (role === 'MASTER') {
+            drawEye(currentState.left_eye);
+        } else {
+            drawEye(currentState.right_eye);
+        }
         
         requestAnimationFrame(renderLoop);
     }
 
+    // Start rendering
     requestAnimationFrame(renderLoop);
 }
 
-// Start the application when the DOM is ready
 document.addEventListener('DOMContentLoaded', init);

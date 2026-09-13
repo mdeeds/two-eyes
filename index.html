@@ -5,19 +5,28 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Synchronized Halloween Eyes</title>
     <link rel="stylesheet" href="./style.css">
+    <!-- PeerJS for WebRTC Synchronization -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>Synchronized Eyes POC</h1>
-            <p>Animating Canvas paths using parsed JSON schema</p>
-        </div>
-        
-        <div class="canvas-container">
-            <canvas id="eyeCanvas" width="800" height="400"></canvas>
-            <div class="label-container">
-                <span id="expressionLabel">Loading...</span>
+    <canvas id="eyeCanvas"></canvas>
+
+    <div id="ui-panel" class="ui-overlay">
+        <div class="panel-content">
+            <h2>Eye Controller (<span id="role-label">Master</span>)</h2>
+            
+            <div id="share-container" style="display: none;">
+                <p>Share this link on the 2nd display to sync the Right Eye:</p>
+                <input type="text" id="share-url" readonly />
             </div>
+            
+            <div class="controls">
+                <label>Zoom / Size:</label>
+                <button id="btn-zoom-out" title="Decrease Size">-</button>
+                <button id="btn-zoom-in" title="Increase Size">+</button>
+            </div>
+            
+            <div id="expressionLabel" class="status-label">Loading...</div>
         </div>
     </div>
     
