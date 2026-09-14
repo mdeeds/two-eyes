@@ -105,21 +105,46 @@ async function init() {
     const urlParams = new URLSearchParams(window.location.search);
     const peerIdFromUrl = urlParams.get('peer');
 
+    const peerConfig = {
+        debug: 2,
+        config: {
+            'iceServers': [
+                { url: 'stun:stun.l.google.com:19302' },
+                { url: 'stun:stun1.l.google.com:19302' }
+            ]
+        }
+    };
+
     if (peerIdFromUrl) {
         // CLIENT MODE (RIGHT EYE)
+        console.log("[CLIENT] Starting in Client Mode. Target Master ID:", peerIdFromUrl);
         role = 'CLIENT';
         document.getElementById('role-label').innerText = 'Right Eye';
         
-        peer = new Peer();
-        peer.on('open', () => {
+        peer = new Peer(peerConfig);
+        
+        peer.on('error', (err) => {
+            console.error("[CLIENT] PeerJS Error:", err);
+            label.innerText = "Error: " + err.type;
+        });
+
+        peer.on('open', (id) => {
+            console.log("[CLIENT] Peer connection open. My ID:", id);
             label.innerText = "Connecting to Master...";
-            const conn = peer.connect(peerIdFromUrl);
             
+            console.log("[CLIENT] Attempting to connect to Master ID:", peerIdFromUrl);
+            const conn = peer.connect(peerIdFromUrl, { reliable: true });
+            
+            conn.on('error', (err) => {
+                console.error("[CLIENT] Connection Error:", err);
+            });
+
             conn.on('open', () => {
-                console.log("Connected to Master!");
+                console.log("[CLIENT] Connected to Master successfully!");
             });
             
             conn.on('data', (data) => {
+                // console.log("[CLIENT] Received data:", data); // verbose, disable if not needed
                 if (data.type === 'SYNC') {
                     syncState.currentIdx = data.currentIdx;
                     syncState.nextIdx = data.nextIdx;
@@ -128,26 +153,43 @@ async function init() {
             });
             
             conn.on('close', () => {
+                console.warn("[CLIENT] Connection to Master closed.");
                 label.innerText = "Connection lost.";
             });
         });
     } else {
         // MASTER MODE (LEFT EYE)
+        console.log("[MASTER] Starting in Master Mode.");
         role = 'MASTER';
         document.getElementById('role-label').innerText = 'Left Eye';
         document.getElementById('share-container').style.display = 'block';
         syncState.transitionStartTime = performance.now() + HOLD_DURATION;
 
         const random5DigitId = Math.floor(10000 + Math.random() * 90000).toString();
-        peer = new Peer(random5DigitId);
+        console.log("[MASTER] Generated random ID:", random5DigitId);
+        
+        peer = new Peer(random5DigitId, peerConfig);
+
+        peer.on('error', (err) => {
+            console.error("[MASTER] PeerJS Error:", err);
+        });
+
         peer.on('open', (id) => {
+            console.log("[MASTER] Peer connection open. My ID:", id);
             const shareUrl = window.location.origin + window.location.pathname + '?peer=' + id;
             shareUrlInput.value = shareUrl;
         });
 
         peer.on('connection', (conn) => {
+            console.log("[MASTER] Incoming connection from Client:", conn.peer);
             connections.push(conn);
+            
+            conn.on('error', (err) => {
+                console.error("[MASTER] Connection Error with Client", conn.peer, ":", err);
+            });
+
             conn.on('open', () => {
+                console.log("[MASTER] Connection open with Client:", conn.peer);
                 // Instantly sync the new client to the current cycle
                 conn.send({
                     type: 'SYNC',
@@ -157,6 +199,7 @@ async function init() {
                 });
             });
             conn.on('close', () => {
+                console.warn("[MASTER] Connection closed with Client:", conn.peer);
                 connections = connections.filter(c => c !== conn);
             });
         });
