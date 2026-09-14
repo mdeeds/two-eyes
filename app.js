@@ -138,7 +138,8 @@ async function init() {
         document.getElementById('share-container').style.display = 'block';
         syncState.transitionStartTime = performance.now() + HOLD_DURATION;
 
-        peer = new Peer();
+        const random5DigitId = Math.floor(10000 + Math.random() * 90000).toString();
+        peer = new Peer(random5DigitId);
         peer.on('open', (id) => {
             const shareUrl = window.location.origin + window.location.pathname + '?peer=' + id;
             shareUrlInput.value = shareUrl;
